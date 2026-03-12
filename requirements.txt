@@ -2,4 +2,4 @@ flet==0.80.5
 requests
 SpeechRecognition
 rapidfuzz
-uvicorn
+uvicorn[standard]

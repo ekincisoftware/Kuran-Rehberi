@@ -664,4 +664,7 @@ def main(page: ft.Page):
     )
 
 
-ft.app(target=main, assets_dir="assets")
+if __name__ == "__main__":
+    ft.app(target=main, assets_dir="assets")
+else:
+    asgi_app = ft.app(target=main, assets_dir="assets", export_asgi_app=True)

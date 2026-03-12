@@ -1,4 +1,5 @@
 flet==0.80.5
+fastapi
 requests
 SpeechRecognition
 rapidfuzz

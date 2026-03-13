@@ -2,6 +2,11 @@ import flet as ft
 import requests
 import speech_recognition as sr
 from rapidfuzz import fuzz
+import asyncio
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+VOICE_RESULTS = {}
 
 TURKCE_SURE_ADLARI = {
     1: "Fâtiha", 2: "Bakara", 3: "Âl-i İmrân", 4: "Nisâ", 5: "Mâide", 6: "En'âm", 7: "A'râf", 8: "Enfâl", 9: "Tevbe", 10: "Yûnus",
@@ -26,6 +31,12 @@ def main(page: ft.Page):
     page.theme_mode = "light"
     page.theme = ft.Theme(color_scheme_seed="teal")
     page.padding = 10
+
+    is_web = getattr(page, "web", False)
+    session_id = getattr(page, "session_id", None)
+
+    if session_id is None and hasattr(page, "session") and hasattr(page.session, "id"):
+        session_id = page.session.id
 
     page.appbar = ft.AppBar(
     title=ft.Text("Kuran-ı Kerim", weight="bold", color="white"),
@@ -138,6 +149,129 @@ def main(page: ft.Page):
     def ayet_listesini_yaz(ayetler):
         ayet_nolari = sorted(set(ayet["ayet_no"] for _, ayet in ayetler))
         return ", ".join(str(n) for n in ayet_nolari)
+
+
+    def browser_voice_start(mode):
+        if not session_id:
+            if mode == "search":
+                sesli_arama_durum.visible = True
+                sesli_arama_durum.value = "❌ Session ID bulunamadı."
+                sesli_arama_durum.color = "red"
+            else:
+                sure_bul_durum.value = "❌ Session ID bulunamadı."
+                sure_bul_durum.color = "red"
+            page.update()
+            return
+
+        url = f"/assets/voice.html?sid={session_id}&mode={mode}"
+        try:
+            page.launch_url(url)
+        except Exception:
+            if mode == "search":
+                sesli_arama_durum.visible = True
+                sesli_arama_durum.value = "❌ Sesli pencere açılamadı."
+                sesli_arama_durum.color = "red"
+            else:
+                sure_bul_durum.value = "❌ Sesli pencere açılamadı."
+                sure_bul_durum.color = "red"
+            page.update()
+
+    def sure_bul_sonuclarini_goster(taninan_metin):
+        sure_bul_sonuc_listesi.controls.clear()
+        sure_bul_sonuc_listesi.controls.append(
+            ft.Row([ft.ProgressRing(color="teal")], alignment=ft.MainAxisAlignment.CENTER)
+        )
+        page.update()
+
+        try:
+            eslesmeler = en_iyi_eslesmeleri_bul(taninan_metin, limit=8)
+            gruplanmis_sureler = sure_sonuclarini_grupla(eslesmeler)
+
+            sure_bul_sonuc_listesi.controls.clear()
+
+            if not gruplanmis_sureler:
+                sure_bul_sonuc_listesi.controls.append(
+                    ft.Text("Eşleşme bulunamadı.", color="red")
+                )
+            else:
+                sure_bul_sonuc_listesi.controls.append(
+                    ft.Text("En yakın sure eşleşmeleri:", weight="bold", size=16, color="teal")
+                )
+
+                for grup in gruplanmis_sureler[:3]:
+                    en_iyi_ayet = grup["en_iyi_ayet"]
+                    ayetler_yazisi = ayet_listesini_yaz(grup["ayetler"])
+
+                    kart = ft.Container(
+                        bgcolor="#f0fdfa",
+                        padding=15,
+                        border_radius=10,
+                        content=ft.Column(
+                            spacing=6,
+                            controls=[
+                                ft.Text(
+                                    f"📖 {grup['sure_adi']} Suresi",
+                                    weight="bold",
+                                    size=18,
+                                    color="teal"
+                                ),
+                                ft.Text(
+                                    f"Eşleşen ayetler: {ayetler_yazisi}",
+                                    color="orange",
+                                    weight="bold"
+                                ),
+                                ft.Text(
+                                    f"En güçlü eşleşme: {en_iyi_ayet['ayet_no']}. ayet  |  Skor: %{int(grup['en_iyi_skor'])}",
+                                    color="#444444"
+                                ),
+                                ft.Divider(height=1, color="teal"),
+                                ft.Text(en_iyi_ayet["arabic"], size=22, text_align=ft.TextAlign.RIGHT),
+                                ft.Text(en_iyi_ayet["okunus"], italic=True, weight="bold", size=15, color="black"),
+                                ft.Text(en_iyi_ayet["meal"], size=15, color="#424242"),
+                                ft.ElevatedButton(
+                                    "Bu surenin detayını aç",
+                                    icon="menu_book",
+                                    bgcolor="teal",
+                                    color="white",
+                                    on_click=lambda e, s_no=grup["sure_no"], s_adi=grup["sure_adi"]: sure_detayini_getir(s_no, s_adi)
+                                )
+                            ]
+                        )
+                    )
+                    sure_bul_sonuc_listesi.controls.append(kart)
+
+        except Exception as ex:
+            sure_bul_sonuc_listesi.controls.clear()
+            sure_bul_sonuc_listesi.controls.append(
+                ft.Text(f"Arama hatası: {ex}", color="red")
+            )
+
+        page.update()
+
+    async def voice_result_watcher():
+        while True:
+            if session_id in VOICE_RESULTS:
+                payload = VOICE_RESULTS.pop(session_id)
+                mode = payload.get("mode")
+                text = payload.get("text", "").strip()
+
+                if text:
+                    if mode == "search":
+                        arama_kutusu.value = text
+                        sesli_arama_durum.visible = True
+                        sesli_arama_durum.value = f"✅ Anlaşılan metin: '{text}'"
+                        sesli_arama_durum.color = "teal"
+                        page.update()
+                        arama_yap(text)
+
+                    elif mode == "find":
+                        sure_bul_durum.value = f"✅ Tanınan metin: {text}"
+                        sure_bul_durum.color = "teal"
+                        page.update()
+                        sure_bul_sonuclarini_goster(text)
+
+            await asyncio.sleep(1)
+
 
     # ================= 1. İÇERİK: ARAMA MOTORU =================
     arama_kutusu = ft.TextField(
@@ -319,7 +453,14 @@ def main(page: ft.Page):
             arama_yap(metin)
 
     def sesli_arama_baslat(e):
-        page.run_thread(sesli_arama_worker)
+        if is_web:
+            sesli_arama_durum.visible = True
+            sesli_arama_durum.value = "🎤 Tarayıcı sesli giriş penceresi açıldı."
+            sesli_arama_durum.color = "orange"
+            page.update()
+            browser_voice_start("search")
+        else:
+            page.run_thread(sesli_arama_worker)
 
     arama_butonu = ft.ElevatedButton(
         "Ara",
@@ -414,74 +555,9 @@ def main(page: ft.Page):
 
         sure_bul_butonu.text = "🔍 Eşleşmeler Aranıyor..."
         sure_bul_butonu.bgcolor = "blue"
-        sure_bul_sonuc_listesi.controls.clear()
-        sure_bul_sonuc_listesi.controls.append(
-            ft.Row([ft.ProgressRing(color="teal")], alignment=ft.MainAxisAlignment.CENTER)
-        )
         page.update()
 
-        try:
-            eslesmeler = en_iyi_eslesmeleri_bul(taninan_metin, limit=8)
-            gruplanmis_sureler = sure_sonuclarini_grupla(eslesmeler)
-
-            sure_bul_sonuc_listesi.controls.clear()
-
-            if not gruplanmis_sureler:
-                sure_bul_sonuc_listesi.controls.append(
-                    ft.Text("Eşleşme bulunamadı.", color="red")
-                )
-            else:
-                sure_bul_sonuc_listesi.controls.append(
-                    ft.Text("En yakın sure eşleşmeleri:", weight="bold", size=16, color="teal")
-                )
-
-                for grup in gruplanmis_sureler[:3]:
-                    en_iyi_ayet = grup["en_iyi_ayet"]
-                    ayetler_yazisi = ayet_listesini_yaz(grup["ayetler"])
-
-                    kart = ft.Container(
-                        bgcolor="#f0fdfa",
-                        padding=15,
-                        border_radius=10,
-                        content=ft.Column(
-                            spacing=6,
-                            controls=[
-                                ft.Text(
-                                    f"📖 {grup['sure_adi']} Suresi",
-                                    weight="bold",
-                                    size=18,
-                                    color="teal"
-                                ),
-                                ft.Text(
-                                    f"Eşleşen ayetler: {ayetler_yazisi}",
-                                    color="orange",
-                                    weight="bold"
-                                ),
-                                ft.Text(
-                                    f"En güçlü eşleşme: {en_iyi_ayet['ayet_no']}. ayet  |  Skor: %{int(grup['en_iyi_skor'])}",
-                                    color="#444444"
-                                ),
-                                ft.Divider(height=1, color="teal"),
-                                ft.Text(en_iyi_ayet["arabic"], size=22, text_align=ft.TextAlign.RIGHT),
-                                ft.Text(en_iyi_ayet["okunus"], italic=True, weight="bold", size=15, color="black"),
-                                ft.Text(en_iyi_ayet["meal"], size=15, color="#424242"),
-                                ft.ElevatedButton(
-                                    "Bu surenin detayını aç",
-                                    icon="menu_book",
-                                    bgcolor="teal",
-                                    color="white",
-                                    on_click=lambda e, s_no=grup["sure_no"], s_adi=grup["sure_adi"]: sure_detayini_getir(s_no, s_adi)
-                                )
-                            ]
-                        )
-                    )
-                    sure_bul_sonuc_listesi.controls.append(kart)
-
-        except Exception as ex:
-            sure_bul_sonuc_listesi.controls.clear()
-            sure_bul_sonuc_listesi.controls.append(
-                ft.Text(f"Arama hatası: {ex}", color="red")
-            )
+        sure_bul_sonuclarini_goster(taninan_metin)
 
         sure_bul_butonu.text = "Oku / Dinlet ve Sureyi Bul"
         sure_bul_butonu.bgcolor = "teal"
@@ -489,7 +565,13 @@ def main(page: ft.Page):
         page.update()
 
     def sure_bul_baslat(e):
-        page.run_thread(sure_bul_worker)
+        if is_web:
+            sure_bul_durum.value = "🎤 Tarayıcı Arapça ses tanıma penceresi açıldı."
+            sure_bul_durum.color = "orange"
+            page.update()
+            browser_voice_start("find")
+        else:
+            page.run_thread(sure_bul_worker)
 
     sure_bul_butonu = ft.ElevatedButton(
         "Oku / Dinlet ve Sureyi Bul",
@@ -657,6 +739,8 @@ def main(page: ft.Page):
         spacing=5
     )
 
+    page.run_task(voice_result_watcher)
+
     page.add(
         ozel_sekme_cubugu,
         ft.Divider(height=5, color="transparent"),
@@ -664,7 +748,30 @@ def main(page: ft.Page):
     )
 
 
+flet_asgi_app = ft.app(target=main, assets_dir="assets", export_asgi_app=True)
+app = FastAPI()
+
+
+@app.post("/api/voice-result")
+async def voice_result(request: Request):
+    data = await request.json()
+    sid = data.get("sid")
+    mode = data.get("mode")
+    text = (data.get("text") or "").strip()
+
+    if not sid or not mode or not text:
+        return JSONResponse({"ok": False, "error": "Eksik veri"}, status_code=400)
+
+    VOICE_RESULTS[sid] = {
+        "mode": mode,
+        "text": text
+    }
+    return JSONResponse({"ok": True})
+
+
+app.mount("/", flet_asgi_app)
+
 if __name__ == "__main__":
     ft.app(target=main, assets_dir="assets")
 else:
-    asgi_app = ft.app(target=main, assets_dir="assets", export_asgi_app=True)
+    asgi_app = app

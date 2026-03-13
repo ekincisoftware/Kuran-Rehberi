@@ -4,7 +4,7 @@ import speech_recognition as sr
 from rapidfuzz import fuzz
 import asyncio
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 
 VOICE_RESULTS = {}
 
@@ -163,9 +163,9 @@ def main(page: ft.Page):
             page.update()
             return
 
-        url = f"/assets/voice.html?sid={session_id}&mode={mode}"
+        url = f"/voice?sid={session_id}&mode={mode}"
         try:
-            page.launch_url(url)
+            page.launch_url(url, web_window_name="_blank")
         except Exception:
             if mode == "search":
                 sesli_arama_durum.visible = True
@@ -750,6 +750,165 @@ def main(page: ft.Page):
 
 flet_asgi_app = ft.app(target=main, assets_dir="assets", export_asgi_app=True)
 app = FastAPI()
+
+
+@app.get("/voice", response_class=HTMLResponse)
+async def voice_page():
+    return """
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Sesli Giriş</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f7f7;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+    .box {
+      background: white;
+      padding: 24px;
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.1);
+      width: 90%;
+      max-width: 420px;
+      text-align: center;
+    }
+    h2 {
+      margin-top: 0;
+      color: teal;
+    }
+    p {
+      color: #444;
+    }
+    button {
+      background: teal;
+      color: white;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 18px;
+      cursor: pointer;
+      font-size: 16px;
+      margin-top: 12px;
+    }
+    button:disabled {
+      opacity: .6;
+      cursor: not-allowed;
+    }
+    #status {
+      margin-top: 18px;
+      font-weight: bold;
+      color: #333;
+      white-space: pre-wrap;
+    }
+    #result {
+      margin-top: 12px;
+      color: #0b6;
+      font-size: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>🎤 Sesli Giriş</h2>
+    <p id="modeText">Hazırlanıyor...</p>
+    <button id="startBtn">Dinlemeyi Başlat</button>
+    <div id="status">Bekleniyor...</div>
+    <div id="result"></div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const sid = params.get("sid");
+    const mode = params.get("mode");
+
+    const modeText = document.getElementById("modeText");
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+    const startBtn = document.getElementById("startBtn");
+
+    if (mode === "find") {
+      modeText.textContent = "Arapça ses tanıma ile sure/ayet bulma modu";
+    } else {
+      modeText.textContent = "Türkçe sesli arama modu";
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      statusEl.textContent = "Bu tarayıcı ses tanımayı desteklemiyor. Chrome/Edge kullan.";
+      startBtn.disabled = true;
+    }
+
+    async function sendResult(text) {
+      const res = await fetch("/api/voice-result", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sid,
+          mode,
+          text
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error("Sunucuya gönderilemedi.");
+      }
+    }
+
+    function startRecognition() {
+      const recognition = new SpeechRecognition();
+      recognition.lang = mode === "find" ? "ar-SA" : "tr-TR";
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      statusEl.textContent = "Dinleniyor...";
+      resultEl.textContent = "";
+      startBtn.disabled = true;
+
+      recognition.onresult = async (event) => {
+        const text = event.results[0][0].transcript;
+        resultEl.textContent = "Algılanan metin: " + text;
+        statusEl.textContent = "Sunucuya gönderiliyor...";
+
+        try {
+          await sendResult(text);
+          statusEl.textContent = "Tamamlandı. Bu pencereyi kapatabilirsin.";
+        } catch (err) {
+          statusEl.textContent = "Hata: " + err.message;
+        } finally {
+          startBtn.disabled = false;
+        }
+      };
+
+      recognition.onerror = (event) => {
+        statusEl.textContent = "Hata: " + event.error;
+        startBtn.disabled = false;
+      };
+
+      recognition.onend = () => {
+        if (statusEl.textContent === "Dinleniyor...") {
+          statusEl.textContent = "Dinleme sona erdi.";
+          startBtn.disabled = false;
+        }
+      };
+
+      recognition.start();
+    }
+
+    startBtn.addEventListener("click", startRecognition);
+  </script>
+</body>
+</html>
+"""
 
 
 @app.post("/api/voice-result")

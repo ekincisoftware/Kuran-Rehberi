@@ -3,6 +3,7 @@ import requests
 import speech_recognition as sr
 from rapidfuzz import fuzz
 import asyncio
+from urllib.parse import urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 
@@ -150,7 +151,6 @@ def main(page: ft.Page):
         ayet_nolari = sorted(set(ayet["ayet_no"] for _, ayet in ayetler))
         return ", ".join(str(n) for n in ayet_nolari)
 
-
     def browser_voice_start(mode):
         if not session_id:
             if mode == "search":
@@ -163,18 +163,40 @@ def main(page: ft.Page):
             page.update()
             return
 
-        url = f"/voice?sid={session_id}&mode={mode}"
         try:
-            page.launch_url(url, web_window_name="_blank")
-        except Exception:
+            current_url = getattr(page, "url", "")
+            parts = urlsplit(current_url)
+
+            if parts.scheme and parts.netloc:
+                base_url = f"{parts.scheme}://{parts.netloc}"
+            else:
+                # Gerekirse kendi Render adresini burada sabitle
+                base_url = "https://kuran-rehberi-mwg8.onrender.com"
+
+            voice_url = f"{base_url}/voice?sid={session_id}&mode={mode}"
+
+            page.launch_url(voice_url, web_window_name="_blank")
+
             if mode == "search":
                 sesli_arama_durum.visible = True
-                sesli_arama_durum.value = "❌ Sesli pencere açılamadı."
+                sesli_arama_durum.value = "🎤 Sesli giriş sayfası yeni sekmede açıldı. Açılmazsa popup engelini kontrol et."
+                sesli_arama_durum.color = "orange"
+            else:
+                sure_bul_durum.value = "🎤 Sesli giriş sayfası yeni sekmede açıldı. Açılmazsa popup engelini kontrol et."
+                sure_bul_durum.color = "orange"
+
+            page.update()
+
+        except Exception as ex:
+            if mode == "search":
+                sesli_arama_durum.visible = True
+                sesli_arama_durum.value = f"❌ Sesli pencere açılamadı: {ex}"
                 sesli_arama_durum.color = "red"
             else:
-                sure_bul_durum.value = "❌ Sesli pencere açılamadı."
+                sure_bul_durum.value = f"❌ Sesli pencere açılamadı: {ex}"
                 sure_bul_durum.color = "red"
             page.update()
+    
 
     def sure_bul_sonuclarini_goster(taninan_metin):
         sure_bul_sonuc_listesi.controls.clear()

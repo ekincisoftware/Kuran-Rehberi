@@ -175,7 +175,7 @@ def main(page: ft.Page):
 
             voice_url = f"{base_url}/voice?sid={session_id}&mode={mode}"
 
-            page.launch_url(voice_url, web_window_name="_blank")
+            page.launch_url(voice_url, web_popup_window_name="_blank")
 
             if mode == "search":
                 sesli_arama_durum.visible = True
